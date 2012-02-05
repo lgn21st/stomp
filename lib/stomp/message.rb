@@ -31,6 +31,7 @@ module Stomp
       raise Stomp::Error::InvalidServerCommand, "invalid command: #{work_command.inspect}" unless @@allowed_commands.include?(work_command)
       #
       work_headers = frame[command_index+1..headers_index-1]
+      work_headers.gsub!("\r\n ", "")
       raise Stomp::Error::InvalidFormat, 'nil headers' unless work_headers
       #
       work_body = frame[headers_index+2..lastnull_index-1]
