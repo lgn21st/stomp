@@ -17,12 +17,27 @@ Optional callback methods:
     on_subscribe: subscribe called
     on_receive: receive called and successful
 
+    on_ssl_connecting: SSL connection starting
+    on_ssl_connected: successful SSL connect
+    on_ssl_connectfail: unsuccessful SSL connect (will usually be retried)
+
+    on_hbread_fail: unsuccessful Heartbeat read
+    on_hbwrite_fail: unsuccessful Heartbeat write
+
 All methods are optional, at the user's requirements.
 
 If a method is not provided, it is not called (of course.)
 
-IMPORTANT NOTE:  call back logging methods *MUST* not raise exceptions, 
-otherwise the underlying STOMP connection will fail in mysterious ways.
+IMPORTANT NOTE:  in general, call back logging methods *SHOULD* not raise exceptions, 
+otherwise the underlying STOMP connection may fail in mysterious ways.
+
+There are two useful exceptions to this rule for:
+
+    on_connectfail
+    on_ssl_connectfail
+
+These two methods can raise a Stomp::Errors::LoggerConnectionError.  If this
+exception is raised, it is passed up the chain to the caller.
 
 Callback parameters: are a copy of the @parameters instance variable for
 the Stomp::Connection.
@@ -64,6 +79,11 @@ class Slogger
     rescue
       @log.debug "Connect Fail oops"
     end
+=begin
+    # An example LoggerConnectionError raise
+    @log.debug "Connect Fail, will raise"
+    raise Stomp::Error::LoggerConnectionError.new("quit from connect")
+=end
   end
 
   # Log disconnect events
@@ -136,26 +156,34 @@ class Slogger
     end
   end
 
-
-  # Stomp 1.1+ - heart beat read (receive) failed
-  def on_hbread_fail(parms, ticker_data)
+  def on_ssl_connecting(parms)
     begin
-      @log.debug "Hbreadf Parms #{info(parms)}"
-      @log.debug "Hbreadf Result #{ticker_data}"
+      @log.debug "SSL Connecting Parms #{info(parms)}"
     rescue
-      @log.debug "Hbreadf oops"
+      @log.debug "SSL Connecting oops"
     end
   end
 
-  # Stomp 1.1+ - heart beat thread fires
-  def on_hbfire(parms, type, time)
+  def on_ssl_connected(parms)
     begin
-      @log.debug "HBfire #{type} " + "=" * 30
-      @log.debug "HBfire #{type} Parms #{info(parms)}"
-      @log.debug "HBfire #{type} Time #{time}"
+      @log.debug "SSL Connected Parms #{info(parms)}"
     rescue
-      @log.debug "HBfire #{type} oops"
+      @log.debug "SSL Connected oops"
     end
+  end
+
+  def on_ssl_connectfail(parms)
+    begin
+      @log.debug "SSL Connect Fail Parms #{info(parms)}"
+      @log.debug "SSL Connect Fail Excception #{parms[:ssl_exception]}, #{parms[:ssl_exception].message}"
+    rescue
+      @log.debug "SSL Connect Fail oops"
+    end
+=begin
+    # An example LoggerConnectionError raise
+    @log.debug "SSL Connect Fail, will raise"
+    raise Stomp::Error::LoggerConnectionError.new("quit from SSL connect")
+=end
   end
 
   private
@@ -172,7 +200,10 @@ class Slogger
     # parms[:cur_parseto]
     # parms[:cur_conattempts]
     #
-    "Host: #{parms[:cur_host]}, Port: #{parms[:cur_port]}, Login: Port: #{parms[:cur_login]}, Passcode: #{parms[:cur_passcode]}" 
+    # For the on_ssl_connectfail callback these are also available:
+    # parms[:ssl_exception]
+    #
+    "Host: #{parms[:cur_host]}, Port: #{parms[:cur_port]}, Login: Port: #{parms[:cur_login]}, Passcode: #{parms[:cur_passcode]}, ssl: #{parms[:cur_ssl]}"
   end
 end # of class
 

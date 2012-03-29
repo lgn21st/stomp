@@ -21,7 +21,7 @@ module Stomp
     def self.default_port(ssl)
       ssl ? 61612 : 61613
     end
-    
+
     # A new Connection object accepts the following parameters:
     #
     #   login             (String,  default : '')
@@ -87,23 +87,24 @@ module Stomp
         @parse_timeout = 5		# To override, use hashed parameters
         @connect_timeout = 0	# To override, use hashed parameters
         @logger = nil     		# To override, use hashed parameters
+        warn "login looks like a URL, do you have the correct parameters?" if @login =~ /:\/\//
       end
-      
+
       # Use Mutexes:  only one lock per each thread
       # Revert to original implementation attempt
       @transmit_semaphore = Mutex.new
       @read_semaphore = Mutex.new
       @socket_semaphore = Mutex.new
-      
+
       @subscriptions = {}
       @failure = nil
       @connection_attempts = 0
-      
+
       socket
     end
-    
+
     def hashed_initialize(params)
-      
+
       @parameters = refine_params(params)
       @reliable =  @parameters[:reliable]
       @reconnect_delay = @parameters[:initial_reconnect_delay]
@@ -113,11 +114,8 @@ module Stomp
       @logger =  @parameters[:logger]
       #sets the first host to connect
       change_host
-      if @logger && @logger.respond_to?(:on_connecting)            
-        @logger.on_connecting(log_params)
-      end
     end
-    
+
     # Syntactic sugar for 'Connection.new' See 'initialize' for usage.
     def Connection.open(login = '', passcode = '', host = 'localhost', port = 61613, reliable = false, reconnect_delay = 5, connect_headers = {})
       Connection.new(login, passcode, host, port, reliable, reconnect_delay, connect_headers)
@@ -127,33 +125,39 @@ module Stomp
       @socket_semaphore.synchronize do
         used_socket = @socket
         used_socket = nil if closed?
-        
+
         while used_socket.nil? || !@failure.nil?
           @failure = nil
           begin
             used_socket = open_socket
             # Open complete
-            
+
             connect(used_socket)
             if @logger && @logger.respond_to?(:on_connected)
-              @logger.on_connected(log_params) 
+              @logger.on_connected(log_params)
             end
             @connection_attempts = 0
           rescue
             @failure = $!
             used_socket = nil
             raise unless @reliable
-            if @logger && @logger.respond_to?(:on_connectfail)            
-              @logger.on_connectfail(log_params) 
+            raise if @failure.is_a?(Stomp::Error::LoggerConnectionError)
+            if @logger && @logger.respond_to?(:on_connectfail)
+              # on_connectfail may raise
+              begin
+                @logger.on_connectfail(log_params)
+              rescue Exception => aex
+                raise if aex.is_a?(Stomp::Error::LoggerConnectionError)
+              end
             else
               $stderr.print "connect to #{@host} failed: #{$!} will retry(##{@connection_attempts}) in #{@reconnect_delay}\n"
             end
             raise Stomp::Error::MaxReconnectAttempts if max_reconnect_attempts?
 
             sleep(@reconnect_delay)
-            
+
             @connection_attempts += 1
-            
+
             if @parameters
               change_host
               increase_reconnect_delay
@@ -163,10 +167,10 @@ module Stomp
         @socket = used_socket
       end
     end
-  
+
     def refine_params(params)
       params = params.uncamelize_and_symbolize_keys
-      
+
       default_params = {
         :connect_headers => {},
         :reliable => true,
@@ -182,35 +186,35 @@ module Stomp
         # Parse Timeout
         :parse_timeout => 5
       }
-      
+
       default_params.merge(params)
-        
+
     end
-    
+
     def change_host
       @parameters[:hosts] = @parameters[:hosts].sort_by { rand } if @parameters[:randomize]
-      
+
       # Set first as master and send it to the end of array
       current_host = @parameters[:hosts].shift
       @parameters[:hosts] << current_host
-      
+
       @ssl = current_host[:ssl]
       @host = current_host[:host]
       @port = current_host[:port] || Connection::default_port(@ssl)
       @login = current_host[:login] || ""
       @passcode = current_host[:passcode] || ""
-      
+
     end
-    
+
     def max_reconnect_attempts?
       !(@parameters.nil? || @parameters[:max_reconnect_attempts].nil?) && @parameters[:max_reconnect_attempts] != 0 && @connection_attempts >= @parameters[:max_reconnect_attempts]
     end
-    
+
     def increase_reconnect_delay
 
-      @reconnect_delay *= @parameters[:back_off_multiplier] if @parameters[:use_exponential_back_off] 
+      @reconnect_delay *= @parameters[:back_off_multiplier] if @parameters[:use_exponential_back_off]
       @reconnect_delay = @parameters[:max_reconnect_delay] if @reconnect_delay > @parameters[:max_reconnect_delay]
-      
+
       @reconnect_delay
     end
 
@@ -289,7 +293,7 @@ module Stomp
         headers[:id] = subId if headers[:id].nil?
       end
       _headerCheck(headers)
-      if @logger && @logger.respond_to?(:on_subscribe)            
+      if @logger && @logger.respond_to?(:on_subscribe)
         @logger.on_subscribe(log_params, headers)
       end
 
@@ -328,21 +332,16 @@ module Stomp
       headers = headers.symbolize_keys
       headers[:destination] = destination
       _headerCheck(headers)
-      if @logger && @logger.respond_to?(:on_publish)            
+      if @logger && @logger.respond_to?(:on_publish)
         @logger.on_publish(log_params, message, headers)
       end
       transmit(Stomp::CMD_SEND, headers, message)
     end
-    
+
     def obj_send(*args)
       __send__(*args)
     end
-    
-    def send(*args)
-      warn("This method is deprecated and will be removed on the next release. Use 'publish' instead")
-      publish(*args)
-    end
-    
+
     # Send a message back to the source or to the dead letter queue
     #
     # Accepts a dead letter queue option ( :dead_letter_queue => "/queue/DLQ" )
@@ -353,19 +352,19 @@ module Stomp
       options = { :dead_letter_queue => "/queue/DLQ", :max_redeliveries => 6 }.merge options
       # Lets make sure all keys are symbols
       message.headers = message.headers.symbolize_keys
-      
+
       retry_count = message.headers[:retry_count].to_i || 0
       message.headers[:retry_count] = retry_count + 1
       transaction_id = "transaction-#{message.headers[:'message-id']}-#{retry_count}"
       message_id = message.headers.delete(:'message-id')
-      
+
       begin
         self.begin transaction_id
-        
+
         if client_ack?(message) || options[:force_client_ack]
           self.ack(message_id, :transaction => transaction_id)
         end
-        
+
         if retry_count <= options[:max_redeliveries]
           self.publish(message.headers[:destination], message.body, message.headers.merge(:transaction => transaction_id))
         else
@@ -378,7 +377,7 @@ module Stomp
         raise exception
       end
     end
-    
+
     def client_ack?(message)
       headers = @subscriptions[message.headers[:destination]]
       !headers.nil? && headers[:ack] == "client"
@@ -445,7 +444,7 @@ module Stomp
         super_result = __old_receive
       end
       #
-      if @logger && @logger.respond_to?(:on_receive)            
+      if @logger && @logger.respond_to?(:on_receive)
         @logger.on_receive(log_params, super_result)
       end
       return super_result
@@ -481,7 +480,7 @@ module Stomp
 	    b[6] = (b[6] & 0x0F) | 0x40
 	    b[8] = (b[8] & 0xbf) | 0x80
       #             0  1  2  3   4   5  6  7   8  9  10 11 12 13 14 15
-	    rs = sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x", 
+	    rs = sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x",
         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15])
       rs
     end
@@ -490,51 +489,58 @@ module Stomp
 
       def _receive( read_socket )
         @read_semaphore.synchronize do
-          # Throw away leading newlines, which are perhaps trailing
-          # newlines from the preceding message, or alterantely a 1.1+ server
-          # heartbeat.
-          begin
-            last_char = read_socket.getc
-            return nil if last_char.nil?
-            if @protocol >= Stomp::SPL_11
-              plc = parse_char(last_char)
-              if plc == "\n" # Server Heartbeat
-                @lr = Time.now.to_f if @hbr
-              end
-            end
-          end until parse_char(last_char) != "\n"
-          read_socket.ungetc(last_char)
-
+          line = read_socket.gets
+          return nil if line.nil?
           # If the reading hangs for more than X seconds, abort the parsing process.
           # X defaults to 5.  Override allowed in connection hash parameters.
           Timeout::timeout(@parse_timeout, Stomp::Error::PacketParsingTimeout) do
             # Reads the beginning of the message until it runs into a empty line
             message_header = ''
-            line = ''
             begin
-              message_header << line
+              message_header += line
               line = read_socket.gets
-              return nil if line.nil?
+              raise Stomp::Error::StompServerError if line.nil?
             end until line =~ /^\s?\n$/
 
             # Checks if it includes content_length header
             content_length = message_header.match /content-length\s?:\s?(\d+)\s?\n/
             message_body = ''
 
-            # If it does, reads the specified amount of bytes
-            char = ''
+            # If content_length is present, read the specified amount of bytes
             if content_length
               message_body = read_socket.read content_length[1].to_i
               raise Stomp::Error::InvalidMessageLength unless parse_char(read_socket.getc) == "\0"
-            # Else reads, the rest of the message until the first \0
+            # Else read the rest of the message until the first \0
             else
-              message_body << char while (char = parse_char(read_socket.getc)) != "\0"
+              message_body = read_socket.readline("\0")
+              message_body.chop!
             end
+
+            # If the buffer isn't empty, reads trailing new lines.
+            #
+            # Note: experiments with JRuby seem to show that .ready? never
+            # returns true.  This means that this code to drain trailing new
+            # lines never runs using JRuby.
+            #
+            # Note 2: the draining of new lines mmust be done _after_ a message
+            # is read.  Do _not_ leave them on the wire and attempt to drain them
+            # at the start of the next read.  Attempting to do that breaks the
+            # asynchronous nature of the 'poll' method.
+            while read_socket.ready?
+              last_char = read_socket.getc
+              break unless last_char
+              if parse_char(last_char) != "\n"
+                read_socket.ungetc(last_char)
+                break
+              end
+            end
+            # And so, a JRuby hack.  Remove any new lines at the start of the
+            # next buffer.
+            message_header.gsub!(/^\n?/, "")
 
             if @protocol >= Stomp::SPL_11
               @lr = Time.now.to_f if @hbr
             end
-
             # Adds the excluded \n and \0 and tries to create a new message with it
             msg = Message.new(message_header + "\n" + message_body + "\0", @protocol >= Stomp::SPL_11)
             #
@@ -583,16 +589,16 @@ module Stomp
           # Ruby 1.8: String#length => # of bytes; Ruby 1.9: String#length => # of characters
           # With Unicode strings, # of bytes != # of characters.  So, use String#bytesize when available.
           body_length_bytes = body.respond_to?(:bytesize) ? body.bytesize : body.length
- 
-          # ActiveMQ interprets every message as a BinaryMessage 
-          # if content_length header is included. 
+
+          # ActiveMQ interprets every message as a BinaryMessage
+          # if content_length header is included.
           # Using :suppress_content_length => true will suppress this behaviour
           # and ActiveMQ will interpret the message as a TextMessage.
           # For more information refer to http://juretta.com/log/2009/05/24/activemq-jms-stomp/
           # Lets send this header in the message, so it can maintain state when using unreceive
           headers['content-length'] = "#{body_length_bytes}" unless headers[:suppress_content_length]
           headers['content-type'] = "text/plain; charset=UTF-8" unless headers['content-type']
-          used_socket.puts command  
+          used_socket.puts command
           headers.each do |k,v|
             if v.is_a?(Array)
               v.each do |e|
@@ -612,9 +618,14 @@ module Stomp
 
         end
       end
-      
+
       def open_tcp_socket
       	tcp_socket = nil
+
+        if @logger && @logger.respond_to?(:on_connecting)
+          @logger.on_connecting(log_params)
+        end
+
       	Timeout::timeout(@connect_timeout, Stomp::Error::SocketOpenTimeout) do
         	tcp_socket = TCPSocket.open @host, @port
       	end
@@ -624,29 +635,106 @@ module Stomp
 
       def open_ssl_socket
         require 'openssl' unless defined?(OpenSSL)
-        ctx = OpenSSL::SSL::SSLContext.new
+        begin # Any raised SSL exceptions
+          ctx = OpenSSL::SSL::SSLContext.new
+          ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE # Assume for now
+          #
+          # Note: if a client uses :ssl => true this results in the gem using
+          # the _default_ Ruby ciphers list.  This is _known_ to fail in later
+          # Ruby releases.  The gem provides a default cipher list that may
+          # function in these cases.  To use this connect with:
+          # * :ssl => Stomp::SSLParams.new
+          # * :ssl => Stomp::SSLParams.new(..., :ciphers => Stomp::DEFAULT_CIPHERS)
+          #
+          # If connecting with an SSLParams instance, and the _default_ Ruby
+          # ciphers list is required, use:
+          # * :ssl => Stomp::SSLParams.new(..., :use_ruby_ciphers => true)
+          #
+          # If a custom ciphers list is required, connect with:
+          # * :ssl => Stomp::SSLParams.new(..., :ciphers => custom_ciphers_list)
+          #
+          if @ssl != true
+            #
+            # Here @ssl is:
+            # * an instance of Stomp::SSLParams
+            # Control would not be here if @ssl == false or @ssl.nil?.
+            #
 
-        # For client certificate authentication:
-        # key_path = ENV["STOMP_KEY_PATH"] || "~/stomp_keys"
-        # ctx.cert = OpenSSL::X509::Certificate.new("#{key_path}/client.cer")
-        # ctx.key = OpenSSL::PKey::RSA.new("#{key_path}/client.keystore")
+            # Back reference the SSLContext
+            @ssl.ctx = ctx
 
-        # For server certificate authentication:
-        # truststores = OpenSSL::X509::Store.new
-        # truststores.add_file("#{key_path}/client.ts")
-        # ctx.verify_mode = OpenSSL::SSL::VERIFY_PEER
-        # ctx.cert_store = truststores
+            # Server authentication parameters if required
+            if @ssl.ts_files
+              ctx.verify_mode = OpenSSL::SSL::VERIFY_PEER
+              truststores = OpenSSL::X509::Store.new
+              fl = @ssl.ts_files.split(",")
+              fl.each do |fn|
+                # Add next cert file listed
+                raise Stomp::Error::SSLNoTruststoreFileError if !File::exists?(fn)
+                raise Stomp::Error::SSLUnreadableTruststoreFileError if !File::readable?(fn)
+                truststores.add_file(fn)
+              end
+              ctx.cert_store = truststores
+            end
 
-        ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE  
-      	ssl = nil
-      	Timeout::timeout(@connect_timeout, Stomp::Error::SocketOpenTimeout) do
-        	ssl = OpenSSL::SSL::SSLSocket.new(open_tcp_socket, ctx)
-      	end
-        def ssl.ready?
-          ! @rbuffer.empty? || @io.ready?
+            # Client authentication parameters
+            # Both cert file and key file must be present or not, it can not be a mix
+            raise Stomp::Error::SSLClientParamsError if @ssl.cert_file.nil? && !@ssl.key_file.nil?
+            raise Stomp::Error::SSLClientParamsError if !@ssl.cert_file.nil? && @ssl.key_file.nil?
+            if @ssl.cert_file # Any check will do here
+              raise Stomp::Error::SSLNoCertFileError if !File::exists?(@ssl.cert_file)
+              raise Stomp::Error::SSLUnreadableCertFileError if !File::readable?(@ssl.cert_file)
+              ctx.cert = OpenSSL::X509::Certificate.new(File.open(@ssl.cert_file))
+              raise Stomp::Error::SSLNoKeyFileError if !File::exists?(@ssl.key_file)
+              raise Stomp::Error::SSLUnreadableKeyFileError if !File::readable?(@ssl.key_file)
+              ctx.key  = OpenSSL::PKey::RSA.new(File.open(@ssl.key_file))
+            end
+
+            # Cipher list
+            if !@ssl.use_ruby_ciphers # No Ruby ciphers (the default)
+              if @ssl.ciphers # User ciphers list?
+                ctx.ciphers = @ssl.ciphers # Accept user supplied ciphers
+              else
+                ctx.ciphers = Stomp::DEFAULT_CIPHERS # Just use Stomp defaults
+              end
+            end
+          end
+
+          #
+          ssl = nil
+          if @logger && @logger.respond_to?(:on_ssl_connecting)
+            @logger.on_ssl_connecting(log_params)
+          end
+
+        	Timeout::timeout(@connect_timeout, Stomp::Error::SocketOpenTimeout) do
+          	ssl = OpenSSL::SSL::SSLSocket.new(open_tcp_socket, ctx)
+        	end
+          def ssl.ready?
+            ! @rbuffer.empty? || @io.ready?
+          end
+          ssl.connect
+          if @ssl != true
+            # Pass back results if possible
+            if RUBY_VERSION =~ /1\.8\.[56]/
+              @ssl.verify_result = "N/A for Ruby #{RUBY_VERSION}"
+            else
+              @ssl.verify_result = ssl.verify_result
+            end
+            @ssl.peer_cert = ssl.peer_cert
+          end
+          if @logger && @logger.respond_to?(:on_ssl_connected)
+            @logger.on_ssl_connected(log_params)
+          end
+          ssl
+        rescue Exception => ex
+          if @logger && @logger.respond_to?(:on_ssl_connectfail)
+            lp = log_params.clone
+            lp[:ssl_exception] = ex
+            @logger.on_ssl_connectfail(lp)
+          end
+          #
+          raise # Reraise
         end
-        ssl.connect
-        ssl
       end
 
       def close_socket
@@ -667,13 +755,13 @@ module Stomp
         used_socket = @ssl ? open_ssl_socket : open_tcp_socket
         # try to close the old connection if any
         close_socket
-        
+
         @closed = false
         # Use keepalive
         used_socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_KEEPALIVE, true)
         used_socket
       end
-      
+
       def connect(used_socket)
         @connect_headers = {} unless @connect_headers # Caller said nil/false
         headers = @connect_headers.clone
@@ -817,7 +905,7 @@ module Stomp
                   @hb_sent = false # Set the warning flag
                   if @logger && @logger.respond_to?(:on_hbwrite_fail)
                     @logger.on_hbwrite_fail(log_params, {"ticker_interval" => @sti,
-                      "exception" => sendex}) 
+                      "exception" => sendex})
                   end
                   raise # Re-raise.  What else could be done here?
                 end
@@ -858,7 +946,7 @@ module Stomp
                 # Shrug.  Have not received one.  Just set warning flag.
                 @hb_received = false
                 if @logger && @logger.respond_to?(:on_hbread_fail)
-                  @logger.on_hbread_fail(log_params, {"ticker_interval" => @rti}) 
+                  @logger.on_hbread_fail(log_params, {"ticker_interval" => @rti})
                 end
               end
             else
@@ -904,7 +992,7 @@ module Stomp
           # * handles all occurrences of valid single byte characters i.e., the ASCII character set
           # * provides state transition logic for start bytes of valid characters with 2-4 bytes
           # * signals a validation failure for all other single bytes
-          # 
+          #
           when "start"
             # puts "state: start" if DEBUG
             case next_byte
@@ -1095,7 +1183,8 @@ module Stomp
             raise Stomp::Error::UTF8ValidationError unless valid_utf8?(e)
           end
         else
-          vs = v.to_s # Values are usually Strings, but could be TrueClass or Symbol
+          vs = v.to_s + "" # Values are usually Strings, but could be TrueClass or Symbol
+          # The + "" forces an 'unfreeze' if necessary
           vs.force_encoding(Stomp::UTF8) if vs.respond_to?(:force_encoding)
           raise Stomp::Error::UTF8ValidationError unless valid_utf8?(vs)
         end

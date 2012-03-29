@@ -86,6 +86,57 @@ module Stomp
       end
     end
 
+    class SSLClientParamsError < RuntimeError
+      def message
+        "certificate and key files are both required"
+      end
+    end
+
+    class StompServerError < RuntimeError
+      def message
+        "Connected, header read is nil, is this really a Stomp Server?"
+      end
+    end
+
+    class SSLNoKeyFileError < RuntimeError
+      def message
+        "client key file does not exist"
+      end
+    end
+
+    class SSLUnreadableKeyFileError < RuntimeError
+      def message
+        "client key file can not be read"
+      end
+    end
+
+    class SSLNoCertFileError < RuntimeError
+      def message
+        "client cert file does not exist"
+      end
+    end
+
+    class SSLUnreadableCertFileError < RuntimeError
+      def message
+        "client cert file can not be read"
+      end
+    end
+
+    class SSLNoTruststoreFileError < RuntimeError
+      def message
+        "a client truststore file does not exist"
+      end
+    end
+
+    class SSLUnreadableTruststoreFileError < RuntimeError
+      def message
+        "a client truststore file can not be read"
+      end
+    end
+
+    class LoggerConnectionError < RuntimeError
+    end
+
   end # module Error
 end # module Stomp
 

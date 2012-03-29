@@ -211,11 +211,6 @@ module Stomp
       __send__(*args)
     end
     
-    def send(*args)
-      warn("This method is deprecated and will be removed on the next release. Use 'publish' instead")
-      publish(*args)
-    end
-    
     def connection_frame
       @connection.connection_frame
     end
@@ -354,11 +349,11 @@ module Stomp
         @listener_thread = Thread.start do
           while true
             message = @connection.receive
-            if message.command == 'MESSAGE'
+            if message.command == Stomp::CMD_MESSAGE
               if listener = find_listener(message)
                 listener.call(message)
               end
-            elsif message.command == 'RECEIPT'
+            elsif message.command == Stomp::CMD_RECEIPT
               if listener = @receipt_listeners[message.headers['receipt-id']]
                 listener.call(message)
               end
